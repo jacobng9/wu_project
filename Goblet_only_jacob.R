@@ -1,10 +1,13 @@
 # =============================================================================
-# GOBLET CELL SUB-ANNOTATION SCRIPT
+# GOBLET CELL SUB-ANNOTATION SCRIPT (Goblet-Only RDS — Jacob)
+# =============================================================================
+# This script loads the pre-processed goblet-only RDS (4.7 GB) which already
+# contains UMAP coordinates and clusters. It skips the subsetting/re-clustering
+# from the full 15.7 GB file and goes straight to annotation + plots.
 # =============================================================================
 
 # --- SETUP ---
 library(Seurat)
-library(harmony)
 library(dplyr)
 library(ggplot2)
 library(openxlsx)
@@ -17,15 +20,54 @@ output_dir <- file.path(root_path, "seurat_output")
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 setwd(root_path)
 
-# --- LOAD DATA ---
-# RDS file is at the project root
-message("Loading data...")
-data <- readRDS(file.path(root_path, "DecontX_Doubletfinders_Colonocytes.rds"))
-message(paste("Loaded object with", ncol(data), "cells and", nrow(data), "genes"))
+# =============================================================================
+# --- LOAD DATA (Goblet-only RDS) ---
+# =============================================================================
+message("Loading goblet-only RDS file...")
+data_goblet <- readRDS(file.path(output_dir, "data_wu_project_goblet_subpops_final.rds"))
+message(paste("Loaded object with", ncol(data_goblet), "cells and", nrow(data_goblet), "genes"))
 
+# --- Discover what's in the object ---
+message("\n--- Available reductions ---")
+print(names(data_goblet@reductions))
+message("\n--- Available metadata columns ---")
+print(colnames(data_goblet@meta.data))
+message("\n--- Existing cluster/subtype counts ---")
+if ("seurat_clusters" %in% colnames(data_goblet@meta.data)) {
+  message("seurat_clusters:")
+  print(table(data_goblet$seurat_clusters))
+}
+if ("goblet_subtypes" %in% colnames(data_goblet@meta.data)) {
+  message("goblet_subtypes (from colleague):")
+  print(table(data_goblet$goblet_subtypes))
+}
+
+# --- Determine which UMAP reduction to use ---
+# The colleague's object may have "umap", "umap_harmony", or both
+umap_reduction <- if ("umap" %in% names(data_goblet@reductions)) {
+  "umap"
+} else if ("umap_harmony" %in% names(data_goblet@reductions)) {
+  "umap_harmony"
+} else {
+  stop("No UMAP reduction found in the RDS! Available: ", paste(names(data_goblet@reductions), collapse = ", "))
+}
+message(paste("Using UMAP reduction:", umap_reduction))
+
+# --- Determine which cluster column to use ---
+cluster_col <- if ("seurat_clusters" %in% colnames(data_goblet@meta.data)) {
+  "seurat_clusters"
+} else if ("goblet_subtypes" %in% colnames(data_goblet@meta.data)) {
+  "goblet_subtypes"
+} else {
+  stop("No cluster column found! Available columns: ", paste(colnames(data_goblet@meta.data), collapse = ", "))
+}
+message(paste("Using cluster column:", cluster_col))
+
+# =============================================================================
 # --- DEFINE FUNCTIONS ---
+# =============================================================================
 
-# 1. Weighted Annotation Function
+# 1. Weighted Annotation Function (same as Processing(Mine).R)
 get_weighted_annotation <- function(seurat_obj, marker_genes, cluster_key, standardize_expression = TRUE) {
   all_obj_genes <- rownames(seurat_obj)
   marker_genes <- lapply(marker_genes, function(gs) intersect(gs, all_obj_genes))
@@ -57,7 +99,7 @@ get_weighted_annotation <- function(seurat_obj, marker_genes, cluster_key, stand
   return(list(annotation_vector = annotation_vector))
 }
 
-# 2. Gene Comparison Plot Function
+# 2. Gene Comparison Plot Function (same as Processing(Mine).R)
 generate_gene_comparison_plots <- function(seurat_obj, score_col, group_by, x_axis, comparisons, plot_type = "violin", output_prefix, plot_title, y_label, fig_width = 12, fig_height = 8) {
   df_plot <- FetchData(seurat_obj, vars = c(score_col, group_by, x_axis))
   colnames(df_plot)[1] <- "Expression"
@@ -71,32 +113,10 @@ generate_gene_comparison_plots <- function(seurat_obj, score_col, group_by, x_ax
 }
 
 # =============================================================================
-# --- GOBLET SUB-CLUSTERING ---
-# =============================================================================
-
-process_and_extract_cell_type <- function(data_obj, cell_type_name) {
-  message(paste("Subsetting for:", cell_type_name))
-  data_subset <- subset(data_obj, subset = broad_cell_types == cell_type_name)
-  message(paste("  ->", ncol(data_subset), "cells in subset"))
-  
-  data_subset <- FindVariableFeatures(data_subset, nfeatures = 2000)
-  data_subset <- ScaleData(data_subset)
-  data_subset <- RunPCA(data_subset, npcs = 30, verbose = FALSE)
-  data_subset <- RunHarmony(data_subset, group.by.vars = "SampleID", dims.use = 1:30, verbose = FALSE)
-  data_subset <- FindNeighbors(data_subset, reduction = "harmony", dims = 1:30)
-  data_subset <- FindClusters(data_subset, resolution = 0.8)
-  data_subset <- RunUMAP(data_subset, reduction = "harmony", dims = 1:30)
-  return(data_subset)
-}
-
-# Execute processing
-data_goblet <- process_and_extract_cell_type(data, "Goblet cells")
-
-# =============================================================================
 # --- PLOT 1: UMAP OF CLUSTERS (before annotation) ---
 # =============================================================================
 message("Generating UMAP of clusters...")
-p_clusters <- DimPlot(data_goblet, reduction = "umap", group.by = "seurat_clusters", label = TRUE, repel = TRUE) +
+p_clusters <- DimPlot(data_goblet, reduction = umap_reduction, group.by = cluster_col, label = TRUE, repel = TRUE) +
   ggtitle("Goblet Cell Clusters") +
   theme(
     legend.text = element_text(size = 12),
@@ -110,7 +130,7 @@ message("  -> Saved: UMAP_goblet_clusters.png")
 # =============================================================================
 message("Generating dotplot of all candidate markers...")
 
-# All markers from the 8-subtype annotation guide
+# All markers from the 8-subtype annotation guide (docx)
 all_goblet_markers <- c(
   # Canonical Crypt GCs
   "Clca1", "Fcgbp", "Atoh1", "Spdef",
@@ -120,7 +140,7 @@ all_goblet_markers <- c(
   "Slfn4", "Stxbp1", "Mxd1", "Ido1",
   # Proliferative GCs
   "Mki67", "Top2a", "Pcna", "Stmn1",
-  # Sentinel GCs (senGCs) — replaces "Defense"
+  # Sentinel GCs (senGCs)
   "Nlrp6", "Il18", "Wfdc2", "Areg",
   # RELMb+ GCs
   "Retnlb",
@@ -144,7 +164,7 @@ if (length(genes_missing) > 0) {
 
 dot_plot <- DotPlot(object = data_goblet, dot.min = 0.05, cols = "RdBu",
                     features = genes_present, scale = TRUE,
-                    group.by = "seurat_clusters") + coord_flip() +
+                    group.by = cluster_col) + coord_flip() +
   theme(
     axis.text.x = element_text(angle = 55, hjust = 1, size = 13),
     axis.text.y = element_text(size = 13),
@@ -157,7 +177,7 @@ ggsave(file.path(output_dir, "Dotplot_goblet_subtype_markers_by_cluster.png"),
 message("  -> Saved: Dotplot_goblet_subtype_markers_by_cluster.png")
 
 # =============================================================================
-# --- GOBLET ANNOTATION WITH CORRECTED MARKERS ---
+# --- GOBLET ANNOTATION WITH CORRECTED 8-SUBTYPE MARKERS ---
 # =============================================================================
 message("Running weighted annotation with corrected 8-subtype markers...")
 
@@ -172,7 +192,7 @@ goblet_sub_markers <- list(
   "MUC5AC+ Meta"    = c("Muc5ac", "Muc6")
 )
 
-results <- get_weighted_annotation(data_goblet, goblet_sub_markers, "seurat_clusters")
+results <- get_weighted_annotation(data_goblet, goblet_sub_markers, cluster_col)
 data_goblet$sub_cell_types <- results$annotation_vector
 
 # Print summary
@@ -183,7 +203,7 @@ print(table(data_goblet$sub_cell_types))
 # --- PLOT 3: UMAP WITH SUBTYPE ANNOTATIONS ---
 # =============================================================================
 message("Generating annotated UMAP...")
-p_annotated <- DimPlot(data_goblet, reduction = "umap", group.by = "sub_cell_types", label = TRUE, repel = TRUE) +
+p_annotated <- DimPlot(data_goblet, reduction = umap_reduction, group.by = "sub_cell_types", label = TRUE, repel = TRUE) +
   ggtitle("Goblet Sub-populations (Corrected Annotation)") +
   theme(
     legend.text = element_text(size = 12),
@@ -191,6 +211,31 @@ p_annotated <- DimPlot(data_goblet, reduction = "umap", group.by = "sub_cell_typ
   )
 ggsave(file.path(output_dir, "UMAP_goblet_sub_types.png"), p_annotated, width = 10, height = 7, dpi = 300, bg = "white")
 message("  -> Saved: UMAP_goblet_sub_types.png")
+
+# =============================================================================
+# --- PLOT 3b: UMAP SPLIT BY GENOTYPE x DIET (2x2 grid) ---
+# =============================================================================
+message("Generating 2x2 UMAP split by Genotype_Diet...")
+p_split <- DimPlot(
+  object = data_goblet,
+  reduction = umap_reduction,
+  group.by = "sub_cell_types",
+  split.by = "Genotype_Diet",
+  label = FALSE,
+  repel = TRUE
+) +
+  facet_wrap(~Genotype_Diet, ncol = 2) +
+  theme(
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16, face = "bold"),
+    panel.spacing = unit(1, "lines"),
+    strip.text = element_text(size = 14, face = "bold")
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+
+ggsave(file.path(output_dir, "UMAP_goblet_sub_types_2x2.png"),
+       plot = p_split, width = 12, height = 10, dpi = 300, bg = "white")
+message("  -> Saved: UMAP_goblet_sub_types_2x2.png")
 
 # =============================================================================
 # --- PLOT 4: DOTPLOT OF MARKERS BY ANNOTATED SUBTYPE ---
@@ -226,7 +271,7 @@ p_pparg <- generate_gene_comparison_plots(
 message("  -> Saved: Goblet_Sub_Pparg.png")
 
 # =============================================================================
-# --- SAVE ---
+# --- SAVE ANNOTATED OBJECT ---
 # =============================================================================
 saveRDS(data_goblet, file.path(output_dir, "data_wu_project_goblet_sub_annotated.rds"))
 message("\n=== Goblet analysis complete. All plots saved to seurat_output/ ===")

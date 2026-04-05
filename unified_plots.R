@@ -6,6 +6,7 @@ library(writexl)
 library(ggpubr)
 
 root_path <- "/Users/aayush/RStudio"
+# root_path <- "/Users/jacobng/Research/cai/wu_directory/wu_project"
 output_dir <- file.path(root_path, "seurat_output")
 setwd(root_path)
 
